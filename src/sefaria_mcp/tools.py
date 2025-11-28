@@ -1,7 +1,9 @@
-from typing import List, Optional
+from typing import List, Optional, Union
 import json
 
 from fastmcp import FastMCP, Context
+from mcp.types import TextContent
+from mcp_ui_server.core import UIResource
 
 from .logic import (
     get_text as _get_text,
@@ -20,6 +22,7 @@ from .logic import (
     get_manuscript_image as _get_manuscript_image,
     get_index as _get_index,
 )
+from .ui import create_text_viewer_resource
 
 def register_tools(mcp: FastMCP) -> None:
     """Register all tool functions with the provided :pyclass:`FastMCP` instance."""
@@ -44,7 +47,9 @@ def register_tools(mcp: FastMCP) -> None:
     # -----------------------------
 
     @mcp.tool
-    async def get_text(ctx: Context, reference: str, version_language: str | None = None) -> str:
+    async def get_text(
+        ctx: Context, reference: str, version_language: str | None = None
+    ) -> List[Union[TextContent, UIResource]]:
         """
         Retrieves the actual text content from a specific reference in the Jewish library.
         
@@ -53,12 +58,39 @@ def register_tools(mcp: FastMCP) -> None:
             version_language: Which language version to retrieve - 'source', 'english', 'both', or omit for all.
         
         Returns:
-            JSON string with the text content.
+            JSON string with the text content, plus a rich UI resource for MCP-UI compatible clients.
         """
         ctx.log(f"[get_text] called with reference={reference!r}, version_language={version_language!r}")
         result = await _get_text(ctx.log, reference, version_language)
         ctx.log(f"[get_text] response size: {_payload_size(result)} bytes")
-        return result
+        
+        # Build response with both text content and UI resource
+        response: List[Union[TextContent, UIResource]] = []
+        
+        # Add the standard text/JSON response for backward compatibility
+        response.append(TextContent(type="text", text=result))
+        
+        # Try to create a UI resource for MCP-UI compatible clients
+        try:
+            # Check for error responses before parsing
+            result_str = result if isinstance(result, str) else str(result)
+            if "error" in result_str.lower():
+                ctx.log("[get_text] MCP-UI resource skipped: result contains error")
+            else:
+                # Parse the result to create the UI resource
+                text_data = json.loads(result) if isinstance(result, str) else result
+                if isinstance(text_data, dict):
+                    ui_resource = create_text_viewer_resource(
+                        reference=reference,
+                        text_data=text_data
+                    )
+                    response.append(ui_resource)
+                    ctx.log("[get_text] MCP-UI resource created successfully")
+        except Exception as e:
+            # If UI resource creation fails, log but don't fail the request
+            ctx.log(f"[get_text] MCP-UI resource creation skipped: {e}")
+        
+        return response
 
     @mcp.tool
     async def text_search(

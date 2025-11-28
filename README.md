@@ -74,6 +74,42 @@ MCP (Model Context Protocol) is an open protocol for connecting Large Language M
 ## Commit Hygiene
 
 This repo uses semantic commits with the `fix`, `feat`, and `chore` keywords.
+
+## MCP-UI Support
+
+This server includes [MCP-UI](https://mcpui.dev/) support for rich interactive UI resources. When using an MCP-UI compatible client (such as [ui-inspector](https://github.com/MCP-UI-Org/mcp-ui) or [LibreChat](https://www.librechat.ai/)), certain tools will return visually rich interactive components alongside the standard JSON responses.
+
+### Supported UI Resources
+
+- **Text Viewer** (`get_text`): Displays Hebrew/English text in a beautiful bilingual panel with:
+  - Side-by-side Hebrew and English columns
+  - Action buttons for showing connections, commentaries, and copying references
+  - Responsive design that adapts to different screen sizes
+
+### How It Works
+
+Tools that support MCP-UI return multiple content items:
+1. A standard text/JSON response (for all MCP clients)
+2. An MCP-UI resource with rich HTML content (for MCP-UI compatible clients)
+
+This ensures backward compatibility with all MCP clients while providing enhanced experiences for UI-capable clients.
+
+### Previewing UI Resources
+
+To preview UI resources, you can use:
+- **ui-inspector**: The official MCP-UI development tool from [MCP-UI-Org](https://github.com/MCP-UI-Org/mcp-ui)
+- **LibreChat**: An open-source AI chat platform with MCP-UI support
+
+### Extending UI Resources
+
+The UI module is designed for extensibility. To add new UI components:
+
+1. Create a component template in `src/sefaria_mcp/ui/components/`
+2. Add a resource factory function in `src/sefaria_mcp/ui/resources.py`
+3. Update the relevant tool to include the new UI resource
+
+See the `text_viewer.py` component for a documented example.
+
 ## Acknowledgments
 
 Special thanks to [@Sivan22](https://github.com/Sivan22) for pioneering the first Sefaria MCP server ([mcp-sefaria-server](https://github.com/Sivan22/mcp-sefaria-server)), which inspired this project and the broader effort to make Jewish texts accessible to LLMs and modern AI tools.
