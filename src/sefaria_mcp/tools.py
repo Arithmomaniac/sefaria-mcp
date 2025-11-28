@@ -72,15 +72,20 @@ def register_tools(mcp: FastMCP) -> None:
         
         # Try to create a UI resource for MCP-UI compatible clients
         try:
-            # Parse the result to create the UI resource
-            text_data = json.loads(result) if isinstance(result, str) else result
-            if isinstance(text_data, dict) and "error" not in result.lower():
-                ui_resource = create_text_viewer_resource(
-                    reference=reference,
-                    text_data=text_data
-                )
-                response.append(ui_resource)
-                ctx.log("[get_text] MCP-UI resource created successfully")
+            # Check for error responses before parsing
+            result_str = result if isinstance(result, str) else str(result)
+            if "error" in result_str.lower():
+                ctx.log("[get_text] MCP-UI resource skipped: result contains error")
+            else:
+                # Parse the result to create the UI resource
+                text_data = json.loads(result) if isinstance(result, str) else result
+                if isinstance(text_data, dict):
+                    ui_resource = create_text_viewer_resource(
+                        reference=reference,
+                        text_data=text_data
+                    )
+                    response.append(ui_resource)
+                    ctx.log("[get_text] MCP-UI resource created successfully")
         except Exception as e:
             # If UI resource creation fails, log but don't fail the request
             ctx.log(f"[get_text] MCP-UI resource creation skipped: {e}")
