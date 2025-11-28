@@ -16,7 +16,8 @@ dependencies = [
     "pillow",
     "fastapi",
     "uvicorn",
-    "python-dotenv"
+    "python-dotenv",
+    "mcp-ui-server"
 ]
 
 [project.scripts]
