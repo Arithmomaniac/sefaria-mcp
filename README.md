@@ -14,6 +14,7 @@ This server exposes the Sefaria Jewish library as a set of 15 MCP tools, allowin
 
 **Core Tools:**
 - **get_links_between_texts** - Find cross-references and connections between texts
+- **suggest_next_sources** - Suggest up to three validated linked sources to study next from a starting reference
 - **search_in_book** - Search within a specific book or text work
 - **search_in_dictionaries** - Search Jewish reference dictionaries
 
@@ -30,6 +31,9 @@ This server exposes the Sefaria Jewish library as a set of 15 MCP tools, allowin
 **Manuscript Tools:**
 - **get_available_manuscripts** - Access historical manuscript metadata and image URLs
 - **get_manuscript_image** - Download and process specific manuscript images
+
+**MCP App POC:**
+- **browse_suggested_sources** - Opens a minimal MCP App UI for a reference, showing the current text and three clickable suggested next sources. The app uses the same server-side lookup pipeline as `suggest_next_sources` and keeps navigation bounded to click-through plus back.
 
 All endpoints are optimized for LLM consumption (compact, relevant, and structured responses).
 
@@ -56,6 +60,31 @@ MCP (Model Context Protocol) is an open protocol for connecting Large Language M
     The server will be available at `http://127.0.0.1:8088/sse` by default.
     Set `SEFARIA_MCP_PORT` to override the SSE/API port (e.g., `SEFARIA_MCP_PORT=8089 python -m sefaria_mcp.main`).
     Prometheus metrics bind separately on `SEFARIA_MCP_METRICS_PORT` (default `9090`).
+
+### Bounded sampling/UI MVP smoke test
+
+The MVP intentionally keeps sampling and UI bounded:
+
+1. The server fetches the current text and first-hop Sefaria links in code.
+2. `suggest_next_sources` makes one guarded sampling request to rank server-provided candidate IDs. If sampling is unavailable, it returns deterministic fallback suggestions.
+3. `browse_suggested_sources` renders a small MCP App with the current text and three suggested next sources.
+
+Exercise the server locally:
+
+```bash
+python -m sefaria_mcp.main
+```
+
+Then connect an MCP client to `http://127.0.0.1:8088/sse` and call:
+
+```text
+get_text(reference="Genesis 1:1", version_language="both")
+get_links_between_texts(reference="Genesis 1:1", with_text="0")
+suggest_next_sources(reference="Genesis 1:1", question="classic commentaries")
+browse_suggested_sources(reference="Genesis 1:1")
+```
+
+The expected fallback suggestions for `Genesis 1:1` should include classic linked commentaries such as Rashi, Ramban, and Ibn Ezra. Sampling-capable clients may reorder or explain suggestions differently, but returned candidate IDs are validated server-side.
 
 ### Docker
 

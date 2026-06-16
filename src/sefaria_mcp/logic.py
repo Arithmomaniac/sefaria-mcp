@@ -4,11 +4,14 @@ import json
 import urllib.parse
 import hdate
 import base64
+import re
 from io import BytesIO
 from PIL import Image
 from typing import Callable, Any
 import os
 from dotenv import load_dotenv
+
+from .models import LinkCandidate, LookupContext
 
 load_dotenv()
 SEFARIA_API_BASE_URL = os.getenv("SEFARIA_API_BASE_URL", "https://www.sefaria.org")
@@ -24,6 +27,23 @@ else:
 
 # Maximum image size in bytes (1MB)
 MAX_IMAGE_SIZE = 1024 * 1024
+MAX_SNIPPET_CHARS = 240
+MAX_TEXT_CONTEXT_CHARS = 1200
+
+CATEGORY_PRIORITY = {
+    "Commentary": 0,
+    "Talmud": 1,
+    "Midrash": 2,
+    "Tanakh": 3,
+    "Halakhah": 4,
+}
+SOURCE_PRIORITY = {
+    "Rashi": 0,
+    "Ramban": 1,
+    "Ibn Ezra": 2,
+    "Rashbam": 3,
+    "Sforno": 4,
+}
 
 lexicon_map = {
     "Reference/Dictionary/Jastrow" : 'Jastrow Dictionary',
@@ -449,25 +469,7 @@ async def get_links(logger, reference: str, with_text: str = "0") -> str:
         return f"No reference provided"
     
     try:
-        # URL encode the reference
-        encoded_reference = urllib.parse.quote(reference)
-        
-        # Build the URL with parameters
-        url = f"{SEFARIA_API_BASE_URL}/api/links/{encoded_reference}"
-        params = [f"with_text={with_text}"]
-            
-        if params:
-            url += "?" + "&".join(params)
-            
-        logger.debug(f"Links API request URL: {url}")
-        
-        # Make the request
-        response = requests.get(url)
-        response.raise_for_status()
-        
-        # Parse the response
-        data = response.json()
-        logger.debug(f"Links API response: {json.dumps(data, ensure_ascii=False)}")
+        data = _fetch_links_data(logger, reference, with_text)
         
         # Optimize the response for LLM consumption
         optimized_data = _optimize_links_response(data)
@@ -479,6 +481,25 @@ async def get_links(logger, reference: str, with_text: str = "0") -> str:
         return f"Error: Failed to parse JSON response: {str(e)}"
     except requests.exceptions.RequestException as e:
         return f"Error during links API request: {str(e)}"
+
+
+async def get_suggestion_lookup_context(logger, reference: str, max_candidates: int = 24) -> str:
+    """Build a bounded evidence packet for source-suggestion sampling."""
+    logger = _ensure_logger(logger)
+
+    if not reference:
+        return json.dumps({"error": "No reference provided"}, ensure_ascii=False)
+
+    text_data = json.loads(await get_text(logger, reference, "both"))
+    links_data = _fetch_links_data(logger, reference, with_text="0")
+    candidates = _build_link_candidates(links_data, max_candidates=max_candidates)
+    context = LookupContext(
+        current_ref=reference,
+        text_en=_extract_text_for_language(text_data, "english"),
+        text_he=_extract_text_for_language(text_data, "hebrew"),
+        candidates=candidates,
+    )
+    return context.model_dump_json(indent=2)
 
 async def get_shape(logger, name: str) -> str:
     """
@@ -961,7 +982,8 @@ def _ensure_logger(logger: Any):
                             message = " ".join(str(a) for a in args)
                 else:
                     message = ""
-                print(f"[{level}] {message}")
+                safe_message = f"[{level}] {message}".encode("ascii", errors="backslashreplace").decode("ascii")
+                print(safe_message)
 
             # Allow ``adapter("message")`` as a synonym for ``adapter.debug``
             def __call__(self, *args, **kwargs):
@@ -1030,6 +1052,104 @@ def _optimize_text_response(data):
         optimized['available_versions'] = simplified_available
         
     return optimized
+
+
+def _fetch_links_data(logger, reference: str, with_text: str = "0") -> list[dict[str, Any]]:
+    encoded_reference = urllib.parse.quote(reference)
+    url = f"{SEFARIA_API_BASE_URL}/api/links/{encoded_reference}?with_text={with_text}"
+    logger.debug(f"Links API request URL: {url}")
+
+    response = requests.get(url)
+    response.raise_for_status()
+    data = response.json()
+    if isinstance(data, list):
+        logger.debug(f"Links API response: {len(data)} links, {len(response.text)} characters")
+        return data
+    logger.debug(f"Links API response had unexpected type: {type(data).__name__}")
+    return []
+
+
+def _extract_text_for_language(text_data: dict[str, Any], language_family: str) -> str | None:
+    versions = text_data.get("versions", [])
+    for version in versions:
+        if version.get("languageFamilyName") == language_family:
+            return _truncate(_plain_text(version.get("text", "")), MAX_TEXT_CONTEXT_CHARS)
+
+    fallback_key = "he" if language_family == "hebrew" else "text"
+    fallback = text_data.get(fallback_key)
+    if fallback:
+        return _truncate(_plain_text(fallback), MAX_TEXT_CONTEXT_CHARS)
+    return None
+
+
+def _build_link_candidates(links: list[dict[str, Any]], max_candidates: int = 24) -> list[LinkCandidate]:
+    shaped = []
+    for link in links:
+        ref = link.get("sourceRef") or link.get("ref")
+        if not ref:
+            continue
+
+        collective_title = link.get("collectiveTitle") or {}
+        text_en = _truncate(_plain_text(link.get("text")), MAX_SNIPPET_CHARS)
+        text_he = _truncate(_plain_text(link.get("he")), MAX_SNIPPET_CHARS)
+        shaped.append(
+            {
+                "ref": ref,
+                "category": link.get("category", "") or "Other",
+                "link_type": link.get("type", "") or "",
+                "source_ref": link.get("sourceRef"),
+                "source_he_ref": link.get("sourceHeRef"),
+                "display_name_en": collective_title.get("en") or _display_title_from_ref(ref),
+                "display_name_he": collective_title.get("he"),
+                "has_english": bool(link.get("sourceHasEn") or text_en),
+                "snippet_en": text_en,
+                "snippet_he": text_he,
+                "_sort": (
+                    CATEGORY_PRIORITY.get(link.get("category", ""), 99),
+                    SOURCE_PRIORITY.get(collective_title.get("en") or _display_title_from_ref(ref), 99),
+                    0 if bool(link.get("sourceHasEn") or text_en) else 1,
+                    float(link.get("commentaryNum") or 9999),
+                    ref,
+                ),
+            }
+        )
+
+    shaped.sort(key=lambda candidate: candidate["_sort"])
+    candidates = []
+    seen_refs = set()
+    for item in shaped:
+        if item["ref"] in seen_refs:
+            continue
+        seen_refs.add(item["ref"])
+        item.pop("_sort", None)
+        candidates.append(LinkCandidate(id=len(candidates), **item))
+        if len(candidates) >= max_candidates:
+            break
+    return candidates
+
+
+def _display_title_from_ref(reference: str) -> str:
+    if " on " in reference:
+        return reference.split(" on ", 1)[0]
+    return reference.split(" ", 1)[0]
+
+
+def _plain_text(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, list):
+        return " ".join(_plain_text(item) for item in value)
+    text = str(value)
+    text = re.sub(r"<[^>]+>", "", text)
+    return " ".join(text.split())
+
+
+def _truncate(text: str, max_chars: int) -> str | None:
+    if not text:
+        return None
+    if len(text) <= max_chars:
+        return text
+    return text[: max_chars - 1].rstrip() + "…"
 
 def _optimize_links_response(data):
     """Optimize links response for LLM consumption"""

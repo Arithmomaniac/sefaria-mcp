@@ -10,15 +10,25 @@ readme = "README.md"
 requires-python = ">=3.10"
 license = { file = "LICENSE" }
 dependencies = [
-    "fastmcp",
+    "fastmcp[apps]==3.4.2",
+    "mcp==1.27.2",
+    "pydantic==2.13.4",
+    "pydantic-core==2.46.4",
     "hdate",
     "requests",
+    "tzdata",
     "pillow",
     "fastapi",
     "uvicorn",
     "python-dotenv",
     "prometheus-fastapi-instrumentator",
     "prometheus-client"
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "pytest-asyncio",
 ]
 
 [project.scripts]

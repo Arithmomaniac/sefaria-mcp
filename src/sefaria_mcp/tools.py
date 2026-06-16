@@ -19,6 +19,14 @@ from .logic import (
     get_search_path_filter as _get_search_path_filter,
     get_manuscript_image as _get_manuscript_image,
     get_index as _get_index,
+    get_suggestion_lookup_context as _get_suggestion_lookup_context,
+)
+from .models import LookupContext, SamplingChoiceResult
+from .suggestions import (
+    build_sampling_prompt,
+    deterministic_suggestions,
+    suggestions_from_sampling,
+    clamp_suggestion_count,
 )
 
 # Import metrics from main module (will be set during initialization)
@@ -180,6 +188,72 @@ def register_tools(mcp: FastMCP) -> None:
         return result
     
     mcp.tool(get_links_between_texts)
+
+    async def suggest_next_sources(
+        ctx: Context,
+        reference: str,
+        question: str | None = None,
+        max_suggestions: int = 3,
+    ) -> str:
+        """
+        Suggests a small set of real linked Sefaria sources to study next.
+
+        The server performs the Sefaria lookups itself, then uses one guarded
+        sampling call to curate from the server-provided candidate IDs. If the
+        client does not support sampling, deterministic fallback suggestions
+        are returned.
+
+        Args:
+            reference: Starting Sefaria reference, e.g. 'Genesis 1:1'.
+            question: Optional learning question to guide curation.
+            max_suggestions: Maximum suggestions to return. Capped at 3.
+
+        Returns:
+            JSON string matching SuggestedSourcesResult.
+        """
+        count = clamp_suggestion_count(max_suggestions)
+        ctx.log(
+            f"[suggest_next_sources] called with reference={reference!r}, "
+            f"question={question!r}, max_suggestions={count!r}"
+        )
+
+        async def _suggest_next_sources_impl() -> str:
+            context_json = await _get_suggestion_lookup_context(ctx.log, reference)
+            context = LookupContext.model_validate_json(context_json)
+            fallback = deterministic_suggestions(context, question=question, max_suggestions=count)
+            if not context.candidates:
+                fallback.errors.append("No linked source candidates were found.")
+                return fallback.model_dump_json(indent=2)
+
+            prompt = build_sampling_prompt(context, question=question, max_suggestions=count)
+            try:
+                sampled = await ctx.sample(
+                    messages=prompt,
+                    system_prompt=(
+                        "You curate Sefaria source-navigation suggestions from server-provided evidence. "
+                        "Return only JSON with choices candidate IDs and concise study rationales."
+                    ),
+                    temperature=0.2,
+                    max_tokens=500,
+                    mask_error_details=True,
+                )
+                sampling_payload = SamplingChoiceResult.model_validate_json(sampled.text or "{}")
+                result = suggestions_from_sampling(
+                    context,
+                    sampling_payload,
+                    question=question,
+                    max_suggestions=count,
+                )
+                return result.model_dump_json(indent=2)
+            except Exception as exc:
+                fallback.errors.append(f"Sampling unavailable; used deterministic fallback: {type(exc).__name__}")
+                return fallback.model_dump_json(indent=2)
+
+        result = await _run_with_metrics("suggest_next_sources", _suggest_next_sources_impl)
+        ctx.log(f"[suggest_next_sources] response size: {_payload_size(result)} bytes")
+        return result
+
+    mcp.tool(suggest_next_sources)
 
     async def search_in_book(
         ctx: Context,

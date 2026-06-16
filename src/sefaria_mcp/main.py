@@ -7,6 +7,7 @@ from prometheus_fastapi_instrumentator import Instrumentator
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
+from .apps.navigator import register_suggested_sources_app
 from .tools import register_tools, set_metrics
 
 
@@ -21,6 +22,7 @@ metrics_dict = {
 }
 
 register_tools(mcp)
+register_suggested_sources_app(mcp)
 
 # ---- WELL-KNOWN METADATA (no-auth stubs) ----
 PROTECTED_RESOURCE_DOC = {
